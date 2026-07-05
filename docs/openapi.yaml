@@ -1,0 +1,362 @@
+openapi: 3.1.0
+info:
+  title: Encryptr Server API
+  version: 0.1.0
+  description: |
+    Encrypted AI conversation backend. Message content is always client-side
+    AEAD ciphertext; the server stores ciphertext, nonce, and auth tag but can
+    never decrypt it. The WebSocket endpoint `/chat/stream` (documented at the
+    bottom, as OpenAPI does not model WebSockets) provides end-to-end
+    encrypted streaming inference.
+servers:
+  - url: http://localhost:8080
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              enum: [validation_error, unauthorized, forbidden, not_found,
+                     conflict, rate_limited, provider_error, internal_error]
+            message:
+              type: string
+    TokenResponse:
+      type: object
+      properties:
+        access_token: { type: string }
+        refresh_token: { type: string }
+        token_type: { type: string, const: Bearer }
+        expires_in: { type: integer, description: Access token TTL in seconds }
+    Conversation:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        model: { type: [string, "null"] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    Message:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        conversation_id: { type: string, format: uuid }
+        role: { type: string, enum: [user, assistant] }
+        ciphertext:
+          type: string
+          description: Base64 AEAD ciphertext with 16-byte tag appended. Opaque to the server.
+        nonce: { type: string, description: Base64 96-bit nonce }
+        algorithm: { type: string, default: AES-256-GCM }
+        key_id: { type: [string, "null"], format: uuid }
+        created_at: { type: string, format: date-time }
+    PublicKey:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        ed25519_public_key: { type: string, description: Base64, 32 bytes }
+        x25519_public_key: { type: string, description: Base64, 32 bytes }
+        label: { type: string }
+        created_at: { type: string, format: date-time }
+
+  responses:
+    Unauthorized:
+      description: Missing/invalid token or revoked session
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    RateLimited:
+      description: Too many requests
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+paths:
+  /register:
+    post:
+      summary: Create an account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, minLength: 10, maxLength: 128 }
+                display_name: { type: string }
+      responses:
+        '201':
+          description: Account created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  email: { type: string }
+        '400': { description: Validation error }
+        '409': { description: Email already registered }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /login:
+    post:
+      summary: Authenticate and start a session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string }
+                password: { type: string }
+      responses:
+        '200':
+          description: Access + refresh tokens
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /refresh:
+    post:
+      summary: Rotate a refresh token
+      description: |
+        Single-use exchange. Reusing an already-rotated token revokes the
+        entire session (theft detection) and returns 401.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: { type: string }
+      responses:
+        '200':
+          description: New token pair
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /logout:
+    post:
+      summary: Revoke the current session and all its tokens
+      security: [{ bearerAuth: [] }]
+      responses:
+        '204': { description: Session revoked }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /me:
+    get:
+      summary: Current user profile
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Profile
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  email: { type: string }
+                  display_name: { type: [string, "null"] }
+                  created_at: { type: string, format: date-time }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /conversations:
+    get:
+      summary: List conversations (metadata only)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Conversations, most recently updated first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Conversation' }
+    post:
+      summary: Create a conversation
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string, maxLength: 200 }
+                model: { type: string }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Conversation' }
+
+  /conversations/{id}:
+    put:
+      summary: Update title/model
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string }
+                model: { type: string }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Conversation' }
+        '404': { description: Not found or not owned }
+    delete:
+      summary: Soft-delete a conversation
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: Deleted }
+        '404': { description: Not found or not owned }
+
+  /messages:
+    get:
+      summary: List encrypted messages in a conversation
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: conversation_id, in: query, required: true, schema: { type: string, format: uuid } }
+        - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 200 } }
+        - { name: before, in: query, schema: { type: string, format: date-time },
+            description: Return messages created strictly before this instant }
+      responses:
+        '200':
+          description: Messages, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Message' }
+        '404': { description: Conversation not found or not owned }
+    post:
+      summary: Store a client-encrypted message
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [conversation_id, role, ciphertext, nonce]
+              properties:
+                conversation_id: { type: string, format: uuid }
+                role: { type: string, enum: [user, assistant] }
+                ciphertext: { type: string, description: Base64, ≤256 KiB decoded }
+                nonce: { type: string, description: Base64, exactly 12 bytes }
+                algorithm: { type: string, default: AES-256-GCM }
+                key_id: { type: string, format: uuid }
+      responses:
+        '201':
+          description: Stored
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Message' }
+
+  /messages/{id}:
+    delete:
+      summary: Permanently delete a message
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: Deleted }
+        '404': { description: Not found or not owned }
+
+  /keys:
+    get:
+      summary: List the caller's public keys
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Active keys
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/PublicKey' }
+    post:
+      summary: Upload device public keys
+      description: Keys are validated (curve membership, small-order rejection).
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ed25519_public_key, x25519_public_key]
+              properties:
+                ed25519_public_key: { type: string }
+                x25519_public_key: { type: string }
+                label: { type: string, default: default }
+      responses:
+        '201':
+          description: Stored
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicKey' }
+        '400': { description: Invalid key material }
+        '409': { description: Label already used }
+
+  /health:
+    get:
+      summary: Liveness/readiness
+      responses:
+        '200': { description: Healthy }
+        '503': { description: Database unavailable }
+
+  /metrics:
+    get:
+      summary: Prometheus metrics
+      responses:
+        '200':
+          description: Text exposition format
+          content:
+            text/plain: {}
+
+# --- WebSocket: /chat/stream (not modeled by OpenAPI) ---
+#
+# GET /chat/stream?token=<access JWT>   (Upgrade: websocket)
+#
+# JSON text frames:
+#   server → client : {"type":"server_hello","public_key":"<b64 X25519>"}
+#   client → server : {"type":"client_hello","public_key":"<b64 X25519>"}
+#     Both sides: HKDF-SHA256(shared_secret, salt=server_pub||client_pub)
+#     → AES-256-GCM keys "c2s" and "s2c"; nonces are per-direction big-endian
+#     counters in the last 8 bytes of the 12-byte nonce.
+#   client → server : {"type":"prompt","ciphertext":"<b64>","nonce":"<b64>"}
+#     plaintext = {"messages":[{"role":"user","content":"..."}],
+#                  "model"?, "max_tokens"?, "temperature"?}
+#   server → client : {"type":"chunk","ciphertext":"<b64>","nonce":"<b64>"}   (repeated)
+#   server → client : {"type":"done"}
+#   server → client : {"type":"error","code":"...","message":"..."}
+#   client → server : {"type":"close"}
