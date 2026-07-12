@@ -9,6 +9,7 @@ use crate::state::AppState;
 /// Liveness/readiness probe including a database round-trip.
 #[utoipa::path(
     get, path = "/health", tag = "system",
+    security(),
     responses(
         (status = 200, description = "Healthy", body = HealthResponse),
         (status = 503, description = "Database unavailable", body = HealthResponse),

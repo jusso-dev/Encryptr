@@ -11,7 +11,7 @@ use crate::state::AppState;
 
 /// List messages in a conversation (newest first, paginated).
 #[utoipa::path(
-    get, path = "/messages", tag = "messages",
+    get, path = "/messages", tag = "messages", operation_id = "list_messages",
     security(("bearerAuth" = [])),
     params(ListMessagesQuery),
     responses(
@@ -31,7 +31,7 @@ pub async fn list(
 
 /// Store a client-encrypted message. The server never sees plaintext.
 #[utoipa::path(
-    post, path = "/messages", tag = "messages",
+    post, path = "/messages", tag = "messages", operation_id = "create_message",
     security(("bearerAuth" = [])),
     request_body = CreateMessageRequest,
     responses(
@@ -52,7 +52,7 @@ pub async fn create(
 
 /// Delete one of the caller's messages.
 #[utoipa::path(
-    delete, path = "/messages/{id}", tag = "messages",
+    delete, path = "/messages/{id}", tag = "messages", operation_id = "delete_message",
     security(("bearerAuth" = [])),
     params(("id" = Uuid, Path, description = "Message id")),
     responses(

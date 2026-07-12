@@ -58,7 +58,7 @@ impl Modify for SecurityAddon {
                        client-side AEAD ciphertext; the server stores ciphertext, nonce, \
                        and auth tag but can never decrypt it. The `/chat/stream` WebSocket \
                        provides end-to-end encrypted streaming inference.",
-        license(name = "MIT"),
+        license(name = "MIT", url = "https://opensource.org/licenses/MIT"),
     ),
     servers(
         (url = "http://localhost:8080", description = "Local development"),

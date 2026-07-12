@@ -10,7 +10,7 @@ use crate::state::AppState;
 
 /// List the caller's public keys.
 #[utoipa::path(
-    get, path = "/keys", tag = "keys",
+    get, path = "/keys", tag = "keys", operation_id = "list_keys",
     security(("bearerAuth" = [])),
     responses(
         (status = 200, description = "Public keys", body = Vec<KeyResponse>),
@@ -27,7 +27,7 @@ pub async fn list(
 
 /// Upload a device public-key pair (Ed25519 + X25519).
 #[utoipa::path(
-    post, path = "/keys", tag = "keys",
+    post, path = "/keys", tag = "keys", operation_id = "create_key",
     security(("bearerAuth" = [])),
     request_body = CreateKeyRequest,
     responses(

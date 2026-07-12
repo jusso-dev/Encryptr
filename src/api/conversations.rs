@@ -13,7 +13,7 @@ use crate::state::AppState;
 
 /// List the caller's conversations.
 #[utoipa::path(
-    get, path = "/conversations", tag = "conversations",
+    get, path = "/conversations", tag = "conversations", operation_id = "list_conversations",
     security(("bearerAuth" = [])),
     responses(
         (status = 200, description = "Conversations", body = Vec<ConversationResponse>),
@@ -30,7 +30,7 @@ pub async fn list(
 
 /// Create a conversation.
 #[utoipa::path(
-    post, path = "/conversations", tag = "conversations",
+    post, path = "/conversations", tag = "conversations", operation_id = "create_conversation",
     security(("bearerAuth" = [])),
     request_body = CreateConversationRequest,
     responses(
@@ -50,7 +50,7 @@ pub async fn create(
 
 /// Update a conversation's title or model.
 #[utoipa::path(
-    put, path = "/conversations/{id}", tag = "conversations",
+    put, path = "/conversations/{id}", tag = "conversations", operation_id = "update_conversation",
     security(("bearerAuth" = [])),
     params(("id" = Uuid, Path, description = "Conversation id")),
     request_body = UpdateConversationRequest,
@@ -73,7 +73,7 @@ pub async fn update(
 
 /// Soft-delete a conversation.
 #[utoipa::path(
-    delete, path = "/conversations/{id}", tag = "conversations",
+    delete, path = "/conversations/{id}", tag = "conversations", operation_id = "delete_conversation",
     security(("bearerAuth" = [])),
     params(("id" = Uuid, Path, description = "Conversation id")),
     responses(

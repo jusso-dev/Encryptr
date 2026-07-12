@@ -27,6 +27,7 @@ fn client_meta(headers: &axum::http::HeaderMap, addr: SocketAddr) -> ClientMeta 
 /// Register a new account.
 #[utoipa::path(
     post, path = "/register", tag = "auth",
+    security(),
     request_body = RegisterRequest,
     responses(
         (status = 201, description = "Account created", body = RegisterResponse),
@@ -55,6 +56,7 @@ pub async fn register(
 /// Exchange credentials for an access/refresh token pair.
 #[utoipa::path(
     post, path = "/login", tag = "auth",
+    security(),
     request_body = LoginRequest,
     responses(
         (status = 200, description = "Authenticated", body = TokenResponse),
@@ -78,6 +80,7 @@ pub async fn login(
 /// already-rotated token revokes the whole session.
 #[utoipa::path(
     post, path = "/refresh", tag = "auth",
+    security(),
     request_body = RefreshRequest,
     responses(
         (status = 200, description = "Rotated", body = TokenResponse),

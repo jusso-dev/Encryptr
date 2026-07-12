@@ -98,6 +98,7 @@ impl Drop for PromptPayload {
 /// the frame protocol. OpenAPI cannot model the frame exchange itself.
 #[utoipa::path(
     get, path = "/chat/stream", tag = "chat",
+    security(),
     params(StreamQuery),
     responses(
         (status = 101, description = "Switching Protocols — WebSocket upgrade"),

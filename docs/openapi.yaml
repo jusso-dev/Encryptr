@@ -4,6 +4,7 @@ info:
   description: Encrypted AI conversation backend. Message content is always client-side AEAD ciphertext; the server stores ciphertext, nonce, and auth tag but can never decrypt it. The `/chat/stream` WebSocket provides end-to-end encrypted streaming inference.
   license:
     name: MIT
+    url: https://opensource.org/licenses/MIT
   version: 0.1.0
 servers:
 - url: http://localhost:8080
@@ -38,12 +39,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiError'
+      security: []
   /conversations:
     get:
       tags:
       - conversations
       summary: List the caller's conversations.
-      operationId: list
+      operationId: list_conversations
       responses:
         '200':
           description: Conversations
@@ -65,7 +67,7 @@ paths:
       tags:
       - conversations
       summary: Create a conversation.
-      operationId: create
+      operationId: create_conversation
       requestBody:
         content:
           application/json:
@@ -98,7 +100,7 @@ paths:
       tags:
       - conversations
       summary: Update a conversation's title or model.
-      operationId: update
+      operationId: update_conversation
       parameters:
       - name: id
         in: path
@@ -144,7 +146,7 @@ paths:
       tags:
       - conversations
       summary: Soft-delete a conversation.
-      operationId: delete
+      operationId: delete_conversation
       parameters:
       - name: id
         in: path
@@ -189,12 +191,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HealthResponse'
+      security: []
   /keys:
     get:
       tags:
       - keys
       summary: List the caller's public keys.
-      operationId: list
+      operationId: list_keys
       responses:
         '200':
           description: Public keys
@@ -216,7 +219,7 @@ paths:
       tags:
       - keys
       summary: Upload a device public-key pair (Ed25519 + X25519).
-      operationId: create
+      operationId: create_key
       requestBody:
         content:
           application/json:
@@ -287,6 +290,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiError'
+      security: []
   /logout:
     post:
       tags:
@@ -330,7 +334,7 @@ paths:
       tags:
       - messages
       summary: List messages in a conversation (newest first, paginated).
-      operationId: list
+      operationId: list_messages
       parameters:
       - name: conversation_id
         in: query
@@ -380,7 +384,7 @@ paths:
       tags:
       - messages
       summary: Store a client-encrypted message. The server never sees plaintext.
-      operationId: create
+      operationId: create_message
       requestBody:
         content:
           application/json:
@@ -419,7 +423,7 @@ paths:
       tags:
       - messages
       summary: Delete one of the caller's messages.
-      operationId: delete
+      operationId: delete_message
       parameters:
       - name: id
         in: path
@@ -500,6 +504,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiError'
+      security: []
   /register:
     post:
       tags:
@@ -537,6 +542,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiError'
+      security: []
 components:
   schemas:
     ApiError:
