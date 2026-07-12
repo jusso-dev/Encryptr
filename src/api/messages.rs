@@ -9,6 +9,17 @@ use crate::middleware::auth::AuthUser;
 use crate::services::messages;
 use crate::state::AppState;
 
+/// List messages in a conversation (newest first, paginated).
+#[utoipa::path(
+    get, path = "/messages", tag = "messages",
+    security(("bearerAuth" = [])),
+    params(ListMessagesQuery),
+    responses(
+        (status = 200, description = "Messages", body = Vec<MessageResponse>),
+        (status = 401, description = "Unauthorized", body = crate::api::openapi::ApiError),
+        (status = 404, description = "Conversation not found", body = crate::api::openapi::ApiError),
+    ),
+)]
 pub async fn list(
     State(state): State<AppState>,
     user: AuthUser,
@@ -18,6 +29,18 @@ pub async fn list(
     Ok(Json(items.into_iter().map(Into::into).collect()))
 }
 
+/// Store a client-encrypted message. The server never sees plaintext.
+#[utoipa::path(
+    post, path = "/messages", tag = "messages",
+    security(("bearerAuth" = [])),
+    request_body = CreateMessageRequest,
+    responses(
+        (status = 201, description = "Stored", body = MessageResponse),
+        (status = 400, description = "Validation error", body = crate::api::openapi::ApiError),
+        (status = 401, description = "Unauthorized", body = crate::api::openapi::ApiError),
+        (status = 404, description = "Conversation not found", body = crate::api::openapi::ApiError),
+    ),
+)]
 pub async fn create(
     State(state): State<AppState>,
     user: AuthUser,
@@ -27,6 +50,17 @@ pub async fn create(
     Ok((StatusCode::CREATED, Json(message.into())))
 }
 
+/// Delete one of the caller's messages.
+#[utoipa::path(
+    delete, path = "/messages/{id}", tag = "messages",
+    security(("bearerAuth" = [])),
+    params(("id" = Uuid, Path, description = "Message id")),
+    responses(
+        (status = 204, description = "Deleted"),
+        (status = 401, description = "Unauthorized", body = crate::api::openapi::ApiError),
+        (status = 404, description = "Not found", body = crate::api::openapi::ApiError),
+    ),
+)]
 pub async fn delete(
     State(state): State<AppState>,
     user: AuthUser,

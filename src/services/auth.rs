@@ -127,8 +127,23 @@ pub async fn refresh(
         return Err(AppError::Unauthorized);
     };
 
-    if record.rotated_at.is_some() {
-        // Replay of a consumed token — revoke everything tied to the session.
+    // A pre-observed rotation is unambiguous reuse; short-circuit to revocation.
+    // The authoritative single-use check is the atomic `mark_rotated` below,
+    // which also closes the TOCTOU window between this read and the update.
+    let already_reused = record.rotated_at.is_some();
+
+    if !already_reused
+        && (record.revoked_at.is_some()
+            || record.expires_at < Utc::now()
+            || !sessions::is_active(&state.pool, record.session_id).await?)
+    {
+        return Err(AppError::Unauthorized);
+    }
+
+    // Atomically consume the token. If zero rows change, another request already
+    // rotated it (or it was pre-observed as rotated) — treat as theft: revoke
+    // the whole session so the attacker and victim are both logged out.
+    if already_reused || !sessions::mark_rotated(&state.pool, record.id).await? {
         sessions::revoke_session(&state.pool, record.session_id).await?;
         audit::record(
             &state.pool,
@@ -141,14 +156,6 @@ pub async fn refresh(
         return Err(AppError::Unauthorized);
     }
 
-    if record.revoked_at.is_some()
-        || record.expires_at < Utc::now()
-        || !sessions::is_active(&state.pool, record.session_id).await?
-    {
-        return Err(AppError::Unauthorized);
-    }
-
-    sessions::mark_rotated(&state.pool, record.id).await?;
     let response = issue_tokens(state, record.user_id, record.session_id).await?;
 
     audit::record(

@@ -7,6 +7,11 @@ pub const MAX_PASSWORD_LEN: usize = 128;
 pub const MAX_EMAIL_LEN: usize = 254;
 pub const MAX_TITLE_LEN: usize = 200;
 pub const MAX_LABEL_LEN: usize = 64;
+pub const MAX_MODEL_LEN: usize = 128;
+/// AEAD algorithms accepted as a message's declared `algorithm`. The server
+/// never decrypts, but bounding this to a known set stops arbitrary
+/// attacker-controlled strings from being stored and echoed back to clients.
+pub const ALLOWED_ALGORITHMS: &[&str] = &["AES-256-GCM", "ChaCha20-Poly1305"];
 /// 256 KiB of ciphertext per message is generous for chat while bounding abuse.
 pub const MAX_CIPHERTEXT_BYTES: usize = 256 * 1024;
 
@@ -73,6 +78,31 @@ pub fn message_role(raw: &str) -> Result<String, AppError> {
     }
 }
 
+pub fn algorithm(raw: &str) -> Result<String, AppError> {
+    let algorithm = raw.trim();
+    if ALLOWED_ALGORITHMS.contains(&algorithm) {
+        Ok(algorithm.to_string())
+    } else {
+        Err(AppError::Validation(format!(
+            "algorithm must be one of: {}",
+            ALLOWED_ALGORITHMS.join(", ")
+        )))
+    }
+}
+
+pub fn model(raw: &str) -> Result<String, AppError> {
+    let model = raw.trim();
+    if model.is_empty() {
+        return Err(AppError::Validation("model must not be empty".into()));
+    }
+    if model.chars().count() > MAX_MODEL_LEN {
+        return Err(AppError::Validation(format!(
+            "model must be at most {MAX_MODEL_LEN} characters"
+        )));
+    }
+    Ok(model.to_string())
+}
+
 pub fn base64_field(raw: &str, field: &str, max_decoded: usize) -> Result<Vec<u8>, AppError> {
     use base64::Engine;
     let bytes = base64::engine::general_purpose::STANDARD
@@ -117,6 +147,20 @@ mod tests {
         assert!(message_role("assistant").is_ok());
         assert!(message_role("system").is_err());
         assert!(message_role("USER").is_err());
+    }
+
+    #[test]
+    fn algorithm_whitelist() {
+        assert_eq!(algorithm("AES-256-GCM").unwrap(), "AES-256-GCM");
+        assert!(algorithm("rot13").is_err());
+        assert!(algorithm("").is_err());
+    }
+
+    #[test]
+    fn model_bounds() {
+        assert_eq!(model(" gpt-4o-mini ").unwrap(), "gpt-4o-mini");
+        assert!(model("").is_err());
+        assert!(model(&"x".repeat(MAX_MODEL_LEN + 1)).is_err());
     }
 
     #[test]

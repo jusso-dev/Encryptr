@@ -156,7 +156,10 @@ impl StreamSession {
     pub fn encrypt_client(&mut self, plaintext: &[u8]) -> Result<(Vec<u8>, [u8; NONCE_LEN])> {
         let nonce = counter_nonce(self.send_counter);
         let ciphertext = aead::encrypt_with_nonce(&self.send_key, plaintext, b"c2s", &nonce)?;
-        self.send_counter += 1;
+        self.send_counter = self
+            .send_counter
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("send counter exhausted"))?;
         Ok((ciphertext, nonce))
     }
 
@@ -171,7 +174,10 @@ impl StreamSession {
             bail!("unexpected nonce");
         }
         let plaintext = aead::decrypt(&self.recv_key, ciphertext, b"s2c", nonce)?;
-        self.recv_counter += 1;
+        self.recv_counter = self
+            .recv_counter
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("recv counter exhausted"))?;
         Ok(Zeroizing::new(plaintext))
     }
 }

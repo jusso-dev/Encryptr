@@ -19,7 +19,8 @@ pub async fn create(
         Some(raw) => validate::title(raw)?,
         None => "New conversation".to_string(),
     };
-    let conversation = repo::insert(&state.pool, user_id, &title, request.model.as_deref()).await?;
+    let model = request.model.as_deref().map(validate::model).transpose()?;
+    let conversation = repo::insert(&state.pool, user_id, &title, model.as_deref()).await?;
     audit::record(
         &state.pool,
         Some(user_id),
@@ -42,15 +43,10 @@ pub async fn update(
     request: UpdateConversationRequest,
 ) -> AppResult<Conversation> {
     let title = request.title.as_deref().map(validate::title).transpose()?;
-    repo::update(
-        &state.pool,
-        id,
-        user_id,
-        title.as_deref(),
-        request.model.as_deref(),
-    )
-    .await?
-    .ok_or(AppError::NotFound)
+    let model = request.model.as_deref().map(validate::model).transpose()?;
+    repo::update(&state.pool, id, user_id, title.as_deref(), model.as_deref())
+        .await?
+        .ok_or(AppError::NotFound)
 }
 
 pub async fn delete(state: &AppState, user_id: Uuid, id: Uuid) -> AppResult<()> {

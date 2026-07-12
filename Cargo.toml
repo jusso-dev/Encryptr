@@ -14,6 +14,11 @@ path = "src/lib.rs"
 name = "encryptr-server"
 path = "src/main.rs"
 
+# Generates docs/openapi.{yaml,json} from the code-first ApiDoc.
+[[bin]]
+name = "gen-openapi"
+path = "src/bin/gen_openapi.rs"
+
 [dependencies]
 # Web framework
 axum = { version = "0.8", features = ["ws", "macros"] }
@@ -43,6 +48,9 @@ sqlx = { version = "0.8", features = [
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# OpenAPI (code-first spec generation)
+utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid", "yaml"] }
 
 # Observability
 tracing = "0.1"

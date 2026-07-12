@@ -5,7 +5,9 @@ use crate::domain::dto::{CreateMessageRequest, ListMessagesQuery};
 use crate::domain::models::EncryptedMessage;
 use crate::domain::validate;
 use crate::error::{AppError, AppResult};
-use crate::repositories::{conversations as conversations_repo, messages as repo};
+use crate::repositories::{
+    conversations as conversations_repo, keys as keys_repo, messages as repo,
+};
 use crate::state::AppState;
 
 const DEFAULT_PAGE_SIZE: i64 = 50;
@@ -32,9 +34,21 @@ pub async fn create(
             "nonce must be exactly {NONCE_LEN} bytes"
         )));
     }
-    let algorithm = request
-        .algorithm
-        .unwrap_or_else(|| "AES-256-GCM".to_string());
+    let algorithm = match request.algorithm.as_deref() {
+        Some(raw) => validate::algorithm(raw)?,
+        None => "AES-256-GCM".to_string(),
+    };
+
+    // A supplied key_id must reference one of the caller's own keys; the DB FK
+    // alone does not enforce ownership, so a user could otherwise point a
+    // message at another account's key.
+    if let Some(key_id) = request.key_id {
+        if !keys_repo::belongs_to_user(&state.pool, key_id, user_id).await? {
+            return Err(AppError::Validation(
+                "key_id does not reference one of your keys".into(),
+            ));
+        }
+    }
 
     let message = repo::insert(
         &state.pool,

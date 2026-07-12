@@ -24,13 +24,25 @@ impl OpenAiProvider {
     }
 }
 
-/// Parse one SSE line from the OpenAI stream.
-pub(crate) fn parse_line(line: &str) -> Option<StreamEvent> {
+/// Parse one SSE line from the OpenAI stream. `None` means "ignore this line";
+/// `Some(Err)` surfaces a provider-signalled error.
+pub(crate) fn parse_line(line: &str) -> Option<Result<StreamEvent, ProviderError>> {
     let data = sse_data(line)?;
     if data == "[DONE]" {
-        return Some(StreamEvent::Done);
+        return Some(Ok(StreamEvent::Done));
     }
     let value: serde_json::Value = serde_json::from_str(data).ok()?;
+    // OpenAI reports mid-stream failures as `{"error": {...}}`.
+    if let Some(error) = value.get("error") {
+        let kind = error
+            .get("type")
+            .and_then(|t| t.as_str())
+            .or_else(|| error.get("code").and_then(|c| c.as_str()))
+            .unwrap_or("unknown");
+        return Some(Err(ProviderError::Request(format!(
+            "openai stream error: {kind}"
+        ))));
+    }
     let delta = value
         .get("choices")?
         .get(0)?
@@ -40,7 +52,7 @@ pub(crate) fn parse_line(line: &str) -> Option<StreamEvent> {
     if delta.is_empty() {
         return None;
     }
-    Some(StreamEvent::Delta(delta.to_string()))
+    Some(Ok(StreamEvent::Delta(delta.to_string())))
 }
 
 #[async_trait]
@@ -50,13 +62,14 @@ impl ChatProvider for OpenAiProvider {
     }
 
     async fn stream_chat(&self, request: ChatRequest) -> Result<EventStream, ProviderError> {
-        let body = json!({
-            "model": request.model,
-            "messages": request.messages,
-            "max_tokens": request.max_tokens,
-            "temperature": request.temperature,
-            "stream": true,
-        });
+        let mut body = serde_json::Map::new();
+        body.insert("model".into(), json!(request.model));
+        body.insert("messages".into(), json!(request.messages));
+        body.insert("max_tokens".into(), json!(request.max_tokens));
+        body.insert("stream".into(), json!(true));
+        if let Some(temperature) = request.temperature {
+            body.insert("temperature".into(), json!(temperature));
+        }
 
         let response = self
             .http
@@ -86,15 +99,20 @@ impl ChatProvider for OpenAiProvider {
                     }
                 };
                 for line in lines.push(&chunk) {
-                    if let Some(event) = parse_line(&line) {
-                        let done = event == StreamEvent::Done;
-                        if tx.send(Ok(event)).await.is_err() || done {
+                    if let Some(result) = parse_line(&line) {
+                        let terminal = !matches!(result, Ok(StreamEvent::Delta(_)));
+                        if tx.send(result).await.is_err() || terminal {
                             return;
                         }
                     }
                 }
             }
-            let _ = tx.send(Ok(StreamEvent::Done)).await;
+            // Closed without `[DONE]`: truncated response, surface an error.
+            let _ = tx
+                .send(Err(ProviderError::Request(
+                    "openai stream ended before [DONE]".into(),
+                )))
+                .await;
         });
 
         Ok(Box::pin(ReceiverStream::new(rx)))
@@ -108,12 +126,18 @@ mod tests {
     #[test]
     fn parses_delta() {
         let line = r#"data: {"choices":[{"delta":{"content":"Hel"}}]}"#;
-        assert_eq!(parse_line(line), Some(StreamEvent::Delta("Hel".into())));
+        assert_eq!(parse_line(line), Some(Ok(StreamEvent::Delta("Hel".into()))));
     }
 
     #[test]
     fn parses_done() {
-        assert_eq!(parse_line("data: [DONE]"), Some(StreamEvent::Done));
+        assert_eq!(parse_line("data: [DONE]"), Some(Ok(StreamEvent::Done)));
+    }
+
+    #[test]
+    fn surfaces_error_events() {
+        let line = r#"data: {"error":{"type":"server_error","message":"boom"}}"#;
+        assert!(matches!(parse_line(line), Some(Err(_))));
     }
 
     #[test]

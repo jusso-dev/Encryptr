@@ -101,9 +101,20 @@ integration test `websocket_encrypted_streaming` in
 | Messages | `GET/POST /messages` · `DELETE /messages/{id}` |
 | Keys | `GET/POST /keys` |
 | Streaming | `GET /chat/stream` (WebSocket) |
-| Ops | `GET /health` · `GET /metrics` |
+| Ops | `GET /health` · `GET /metrics` (auth required) |
+| Docs | `GET /openapi.json` (live spec) · `GET /docs` (Redoc UI) |
 
-Full schemas: [docs/openapi.yaml](docs/openapi.yaml).
+Full schemas: [docs/openapi.yaml](docs/openapi.yaml). The spec is **generated
+from the code** (utoipa annotations on the handlers + `ToSchema` DTOs), so it
+cannot drift. Regenerate after changing any endpoint:
+
+```bash
+cargo run --bin gen-openapi   # writes docs/openapi.{yaml,json}
+```
+
+CI regenerates and fails if the committed spec is stale, and lints it with
+Redocly. A running server also serves the live spec at `/openapi.json` and a
+browsable Redoc page at `/docs`.
 
 ## Configuration
 
@@ -129,9 +140,10 @@ streaming flow against a mock provider.
 
 ## CI
 
-GitHub Actions runs `cargo fmt --check`, `clippy -D warnings`, the full test
-suite against a Postgres service, `cargo audit`, a Docker build, and uploads
-a release binary on `main`.
+GitHub Actions runs `cargo fmt --check`, `clippy -D warnings`, an OpenAPI
+generate-and-diff drift check (plus Redocly lint), the full test suite against
+a Postgres service, `cargo audit`, a Docker build, and uploads a release binary
+on `main`.
 
 ## Security posture (summary)
 

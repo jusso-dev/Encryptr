@@ -10,7 +10,11 @@ use axum::response::Response;
 use crate::state::AppState;
 
 /// Add defense-in-depth headers to every response.
-pub async fn security_headers(request: Request, next: Next) -> Response {
+pub async fn security_headers(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Response {
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
 
@@ -30,7 +34,23 @@ pub async fn security_headers(request: Request, next: Next) -> Response {
         "permissions-policy",
         "camera=(), microphone=(), geolocation=()",
     );
+    // JSON API renders no HTML; lock scripting/embedding down entirely as
+    // defense-in-depth alongside X-Frame-Options.
+    set(
+        headers,
+        "content-security-policy",
+        "default-src 'none'; frame-ancestors 'none'",
+    );
     set(headers, "cache-control", "no-store");
+    // HSTS only in production: pinning clients to HTTPS would break the
+    // plaintext localhost workflow used in development/testing.
+    if state.config.environment.is_production() {
+        set(
+            headers,
+            "strict-transport-security",
+            "max-age=63072000; includeSubDomains",
+        );
+    }
     response
 }
 

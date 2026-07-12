@@ -21,6 +21,7 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::response::Response;
 use base64::Engine;
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::Ordering;
 use zeroize::Zeroize;
@@ -30,6 +31,7 @@ use crate::crypto::stream_session::{Handshake, StreamSession};
 use crate::error::AppResult;
 use crate::middleware::auth::{authenticate, AuthUser};
 use crate::providers::{ChatMessage, ChatRequest, StreamEvent};
+use crate::repositories::sessions;
 use crate::state::AppState;
 
 const B64: base64::engine::general_purpose::GeneralPurpose =
@@ -38,11 +40,19 @@ const B64: base64::engine::general_purpose::GeneralPurpose =
 /// Hard limits on a single prompt payload.
 const MAX_PROMPT_MESSAGES: usize = 100;
 const MAX_PROMPT_BYTES: usize = 512 * 1024;
+/// Cap on an inbound WebSocket frame. `RequestBodyLimitLayer` does not apply to
+/// WS frames, so bound them here to keep a client from forcing a huge
+/// allocation before the payload is even decoded. Generous vs. the base64
+/// expansion of `MAX_PROMPT_BYTES`.
+const MAX_WS_MESSAGE_BYTES: usize = 2 * 1024 * 1024;
 const DEFAULT_MAX_TOKENS: u32 = 1024;
 const MAX_MAX_TOKENS: u32 = 8192;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct StreamQuery {
+    /// Access JWT — passed as a query parameter because browsers cannot set
+    /// the `Authorization` header on a WebSocket upgrade.
     token: String,
 }
 
@@ -80,6 +90,20 @@ impl Drop for PromptPayload {
     }
 }
 
+/// Establish the end-to-end encrypted streaming chat WebSocket.
+///
+/// This is a WebSocket upgrade, not a normal request/response. After upgrade the
+/// client and server perform an X25519 handshake, then exchange AES-256-GCM
+/// encrypted JSON frames (`prompt` → `chunk*` → `done`). See the module docs for
+/// the frame protocol. OpenAPI cannot model the frame exchange itself.
+#[utoipa::path(
+    get, path = "/chat/stream", tag = "chat",
+    params(StreamQuery),
+    responses(
+        (status = 101, description = "Switching Protocols — WebSocket upgrade"),
+        (status = 401, description = "Unauthorized", body = crate::api::openapi::ApiError),
+    ),
+)]
 pub async fn chat_stream(
     State(state): State<AppState>,
     Query(query): Query<StreamQuery>,
@@ -88,6 +112,9 @@ pub async fn chat_stream(
     // Browsers cannot set Authorization headers on WebSocket upgrades, so the
     // access token arrives as a query parameter and is validated up front.
     let user = authenticate(&state, &query.token).await?;
+    let ws = ws
+        .max_message_size(MAX_WS_MESSAGE_BYTES)
+        .max_frame_size(MAX_WS_MESSAGE_BYTES);
     Ok(ws.on_upgrade(move |socket| async move {
         state
             .metrics
@@ -180,10 +207,75 @@ async fn handle_socket(
 
     tracing::info!(user_id = %user.user_id, "chat stream established");
 
+    // The access token's expiry is a hard ceiling on the connection: auth is
+    // checked once at upgrade, so without this a socket would outlive the token.
+    let now = Utc::now().timestamp();
+    let ttl_secs = user.expires_at.saturating_sub(now);
+    if ttl_secs <= 0 {
+        let _ = socket.send(Message::Close(None)).await;
+        return Ok(());
+    }
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(ttl_secs as u64);
+    let sleep = tokio::time::sleep_until(deadline);
+    tokio::pin!(sleep);
+
     // --- Prompt / response loop ---
-    while let Some(frame) = next_client_frame(&mut socket).await? {
+    loop {
+        let frame = tokio::select! {
+            _ = &mut sleep => {
+                let _ = send_frame(
+                    &mut socket,
+                    &ServerFrame::Error {
+                        code: "session_expired",
+                        message: "access token expired; reconnect".into(),
+                    },
+                )
+                .await;
+                break;
+            }
+            frame = next_client_frame(&mut socket) => frame?,
+        };
+        let Some(frame) = frame else { break };
+
         match frame {
             ClientFrame::Prompt { ciphertext, nonce } => {
+                // Re-validate the session on every prompt so a logout/revocation
+                // takes effect on an already-open socket.
+                if !sessions::is_active(&state.pool, user.session_id)
+                    .await
+                    .unwrap_or(false)
+                {
+                    let _ = send_frame(
+                        &mut socket,
+                        &ServerFrame::Error {
+                            code: "session_revoked",
+                            message: "session is no longer active".into(),
+                        },
+                    )
+                    .await;
+                    break;
+                }
+                // Per-user cap on prompts: the HTTP rate limiter only guards the
+                // one-time upgrade, so meter individual prompts here to bound
+                // upstream provider cost/abuse on a single connection.
+                if !state
+                    .rate_limiter
+                    .check(&format!("ws-prompt:{}", user.user_id))
+                {
+                    state
+                        .metrics
+                        .rate_limited_total
+                        .fetch_add(1, Ordering::Relaxed);
+                    send_frame(
+                        &mut socket,
+                        &ServerFrame::Error {
+                            code: "rate_limited",
+                            message: "too many prompts, slow down".into(),
+                        },
+                    )
+                    .await?;
+                    continue;
+                }
                 if let Err(error) =
                     handle_prompt(&mut socket, state, &mut session, &ciphertext, &nonce).await
                 {

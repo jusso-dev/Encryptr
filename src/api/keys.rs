@@ -8,6 +8,15 @@ use crate::middleware::auth::AuthUser;
 use crate::services::keys;
 use crate::state::AppState;
 
+/// List the caller's public keys.
+#[utoipa::path(
+    get, path = "/keys", tag = "keys",
+    security(("bearerAuth" = [])),
+    responses(
+        (status = 200, description = "Public keys", body = Vec<KeyResponse>),
+        (status = 401, description = "Unauthorized", body = crate::api::openapi::ApiError),
+    ),
+)]
 pub async fn list(
     State(state): State<AppState>,
     user: AuthUser,
@@ -16,6 +25,18 @@ pub async fn list(
     Ok(Json(items.into_iter().map(Into::into).collect()))
 }
 
+/// Upload a device public-key pair (Ed25519 + X25519).
+#[utoipa::path(
+    post, path = "/keys", tag = "keys",
+    security(("bearerAuth" = [])),
+    request_body = CreateKeyRequest,
+    responses(
+        (status = 201, description = "Stored", body = KeyResponse),
+        (status = 400, description = "Validation error", body = crate::api::openapi::ApiError),
+        (status = 401, description = "Unauthorized", body = crate::api::openapi::ApiError),
+        (status = 409, description = "Duplicate label", body = crate::api::openapi::ApiError),
+    ),
+)]
 pub async fn create(
     State(state): State<AppState>,
     user: AuthUser,

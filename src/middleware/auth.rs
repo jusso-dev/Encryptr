@@ -14,6 +14,9 @@ use crate::state::AppState;
 pub struct AuthUser {
     pub user_id: Uuid,
     pub session_id: Uuid,
+    /// Access-token expiry (`exp`, Unix seconds). Long-lived consumers such as
+    /// the WebSocket stream enforce this as a hard deadline.
+    pub expires_at: i64,
 }
 
 impl FromRequestParts<AppState> for AuthUser {
@@ -47,5 +50,6 @@ pub async fn authenticate(state: &AppState, token: &str) -> Result<AuthUser, App
     Ok(AuthUser {
         user_id: claims.sub,
         session_id: claims.sid,
+        expires_at: claims.exp,
     })
 }

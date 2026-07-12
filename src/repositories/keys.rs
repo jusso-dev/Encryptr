@@ -26,6 +26,23 @@ pub async fn insert(
     .await
 }
 
+/// True when `key_id` is an active key owned by `user_id`.
+pub async fn belongs_to_user(
+    pool: &PgPool,
+    key_id: Uuid,
+    user_id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    let row: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT id FROM public_keys
+         WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL",
+    )
+    .bind(key_id)
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.is_some())
+}
+
 pub async fn list_for_user(
     pool: &PgPool,
     user_id: Uuid,

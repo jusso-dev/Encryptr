@@ -16,10 +16,11 @@ use async_trait::async_trait;
 use futures::Stream;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use zeroize::Zeroize;
 
 use crate::config::{Config, ProviderKind};
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, PartialEq, Eq)]
 pub enum ProviderError {
     #[error("provider request failed: {0}")]
     Request(String),
@@ -43,6 +44,17 @@ pub struct ChatRequest {
     pub messages: Vec<ChatMessage>,
     pub max_tokens: u32,
     pub temperature: Option<f32>,
+}
+
+/// Wipe prompt plaintext from this request when it is dropped. The provider
+/// serialises `messages` into an HTTP body; this at least keeps the owned copy
+/// from lingering in freed heap memory after the request completes.
+impl Drop for ChatRequest {
+    fn drop(&mut self) {
+        for message in &mut self.messages {
+            message.content.zeroize();
+        }
+    }
 }
 
 /// One incremental piece of a streamed completion.

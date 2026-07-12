@@ -2,32 +2,47 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
+use zeroize::Zeroize;
 
 use super::models::{Conversation, EncryptedMessage, PublicKeyRecord, User};
 
 // ---------- Auth ----------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct RegisterRequest {
     pub email: String,
     pub password: String,
     pub display_name: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+/// Wipe the plaintext password from memory once the request is done with.
+impl Drop for RegisterRequest {
+    fn drop(&mut self) {
+        self.password.zeroize();
+    }
+}
+
+#[derive(Debug, Serialize, ToSchema)]
 pub struct RegisterResponse {
     pub id: Uuid,
     pub email: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct LoginRequest {
     pub email: String,
     pub password: String,
 }
 
-#[derive(Debug, Serialize)]
+impl Drop for LoginRequest {
+    fn drop(&mut self) {
+        self.password.zeroize();
+    }
+}
+
+#[derive(Debug, Serialize, ToSchema)]
 pub struct TokenResponse {
     pub access_token: String,
     pub refresh_token: String,
@@ -35,12 +50,18 @@ pub struct TokenResponse {
     pub expires_in: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct RefreshRequest {
     pub refresh_token: String,
 }
 
-#[derive(Debug, Serialize)]
+impl Drop for RefreshRequest {
+    fn drop(&mut self) {
+        self.refresh_token.zeroize();
+    }
+}
+
+#[derive(Debug, Serialize, ToSchema)]
 pub struct MeResponse {
     pub id: Uuid,
     pub email: String,
@@ -61,19 +82,19 @@ impl From<User> for MeResponse {
 
 // ---------- Conversations ----------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateConversationRequest {
     pub title: Option<String>,
     pub model: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateConversationRequest {
     pub title: Option<String>,
     pub model: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ConversationResponse {
     pub id: Uuid,
     pub title: String,
@@ -96,7 +117,7 @@ impl From<Conversation> for ConversationResponse {
 
 // ---------- Messages ----------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateMessageRequest {
     pub conversation_id: Uuid,
     pub role: String,
@@ -108,15 +129,18 @@ pub struct CreateMessageRequest {
     pub key_id: Option<Uuid>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListMessagesQuery {
+    /// Conversation whose messages to return.
     pub conversation_id: Uuid,
+    /// Page size, clamped server-side to 1..=200 (default 50).
     pub limit: Option<i64>,
     /// Return messages created strictly before this timestamp (pagination).
     pub before: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct MessageResponse {
     pub id: Uuid,
     pub conversation_id: Uuid,
@@ -147,7 +171,7 @@ impl From<EncryptedMessage> for MessageResponse {
 
 // ---------- Keys ----------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateKeyRequest {
     /// Base64-encoded 32-byte Ed25519 public key.
     pub ed25519_public_key: String,
@@ -156,7 +180,7 @@ pub struct CreateKeyRequest {
     pub label: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct KeyResponse {
     pub id: Uuid,
     pub ed25519_public_key: String,
@@ -181,7 +205,7 @@ impl From<PublicKeyRecord> for KeyResponse {
 
 // ---------- Health ----------
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct HealthResponse {
     pub status: &'static str,
     pub version: &'static str,

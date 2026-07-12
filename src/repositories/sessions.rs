@@ -89,11 +89,17 @@ pub async fn find_refresh_token(
     .await
 }
 
-/// Mark a token as rotated (single-use exchange during refresh).
-pub async fn mark_rotated(pool: &PgPool, token_id: Uuid) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE refresh_tokens SET rotated_at = now() WHERE id = $1")
-        .bind(token_id)
-        .execute(pool)
-        .await?;
-    Ok(())
+/// Atomically consume a token during rotation. Returns `true` only if THIS call
+/// transitioned it from un-rotated to rotated. The `rotated_at IS NULL` guard
+/// makes consumption single-use even under concurrent refreshes: exactly one of
+/// two racing requests updates a row, so the loser sees `false` and can treat
+/// it as reuse instead of both minting fresh token pairs.
+pub async fn mark_rotated(pool: &PgPool, token_id: Uuid) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE refresh_tokens SET rotated_at = now() WHERE id = $1 AND rotated_at IS NULL",
+    )
+    .bind(token_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
 }

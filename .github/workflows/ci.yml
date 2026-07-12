@@ -23,6 +23,30 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --all-targets -- -D warnings
 
+  openapi:
+    name: OpenAPI spec
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Regenerate OpenAPI spec
+        run: cargo run --locked --bin gen-openapi
+      - name: Fail if the committed spec is stale
+        run: |
+          if ! git diff --exit-code -- docs/openapi.yaml docs/openapi.json; then
+            echo "::error::docs/openapi.{yaml,json} is out of date. Run 'cargo run --bin gen-openapi' and commit the result." >&2
+            exit 1
+          fi
+      - name: Validate spec with Redocly
+        run: npx --yes @redocly/cli@latest lint docs/openapi.yaml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openapi-spec
+          path: |
+            docs/openapi.yaml
+            docs/openapi.json
+
   test:
     name: Tests
     runs-on: ubuntu-latest

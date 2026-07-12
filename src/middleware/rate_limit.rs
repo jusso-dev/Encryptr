@@ -15,6 +15,13 @@ use dashmap::DashMap;
 use crate::error::AppError;
 use crate::state::AppState;
 
+/// Upper bound on distinct keys tracked at once. Bounds memory against a flood
+/// of distinct client identities (e.g. many source IPs); once reached, a sweep
+/// of expired windows runs before admitting a new key, and if that does not
+/// free space the new client is rejected rather than growing the map without
+/// limit.
+const MAX_TRACKED_KEYS: usize = 100_000;
+
 pub struct RateLimiter {
     max_requests: u32,
     window: Duration,
@@ -36,6 +43,14 @@ impl RateLimiter {
     }
 
     fn check_at(&self, key: &str, now: Instant) -> bool {
+        // Bound memory: if the map is full and this is a new key, try a sweep,
+        // then refuse rather than allocate an unbounded number of entries.
+        if !self.windows.contains_key(key) && self.windows.len() >= MAX_TRACKED_KEYS {
+            self.sweep();
+            if self.windows.len() >= MAX_TRACKED_KEYS {
+                return false;
+            }
+        }
         let mut entry = self.windows.entry(key.to_string()).or_insert((now, 0));
         let (window_start, count) = *entry;
         if now.duration_since(window_start) >= self.window {
@@ -91,7 +106,7 @@ async fn enforce(
     request: Request,
     next: Next,
 ) -> Result<Response, AppError> {
-    let key = client_key(&request, addr);
+    let key = client_key(&request, addr, state.config.trust_proxy_headers);
     if !limiter.check(&key) {
         state
             .metrics
@@ -102,17 +117,37 @@ async fn enforce(
     Ok(next.run(request).await)
 }
 
-/// Prefer the leftmost X-Forwarded-For hop (set by our own proxy) and fall
-/// back to the socket address.
-fn client_key(request: &Request, addr: SocketAddr) -> String {
-    request
-        .headers()
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.split(',').next())
-        .map(|ip| ip.trim().to_string())
-        .filter(|ip| !ip.is_empty())
-        .unwrap_or_else(|| addr.ip().to_string())
+/// Derive the client identity used for rate limiting.
+///
+/// `X-Forwarded-For`/`X-Real-IP` are attacker-controlled unless a trusted proxy
+/// overwrites them, so they are honored ONLY when `trust_proxy_headers` is set
+/// (see `Config::trust_proxy_headers`). When trusted, the *rightmost* forwarded
+/// hop is used — that is the address the trusted proxy actually saw, and it
+/// cannot be forged by prepending fake entries. Otherwise the unspoofable
+/// socket peer address is used.
+fn client_key(request: &Request, addr: SocketAddr, trust_proxy_headers: bool) -> String {
+    if trust_proxy_headers {
+        if let Some(ip) = request
+            .headers()
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.split(',').next_back())
+            .map(|ip| ip.trim().to_string())
+            .filter(|ip| !ip.is_empty())
+        {
+            return ip;
+        }
+        if let Some(ip) = request
+            .headers()
+            .get("x-real-ip")
+            .and_then(|v| v.to_str().ok())
+            .map(|ip| ip.trim().to_string())
+            .filter(|ip| !ip.is_empty())
+        {
+            return ip;
+        }
+    }
+    addr.ip().to_string()
 }
 
 #[cfg(test)]
@@ -143,6 +178,29 @@ mod tests {
         assert!(limiter.check_at("a", start));
         assert!(!limiter.check_at("a", start));
         assert!(limiter.check_at("a", start + Duration::from_millis(11)));
+    }
+
+    fn request_with_xff(value: &str) -> Request {
+        Request::builder()
+            .header("x-forwarded-for", value)
+            .body(axum::body::Body::empty())
+            .unwrap()
+    }
+
+    #[test]
+    fn ignores_forwarded_header_when_untrusted() {
+        let addr: SocketAddr = "203.0.113.9:5555".parse().unwrap();
+        let req = request_with_xff("1.1.1.1, 2.2.2.2");
+        // Untrusted: spoofed header is ignored, socket IP wins.
+        assert_eq!(client_key(&req, addr, false), "203.0.113.9");
+    }
+
+    #[test]
+    fn uses_rightmost_forwarded_hop_when_trusted() {
+        let addr: SocketAddr = "10.0.0.1:5555".parse().unwrap();
+        let req = request_with_xff("1.1.1.1, 2.2.2.2");
+        // Trusted proxy appends the real client; rightmost is what it saw.
+        assert_eq!(client_key(&req, addr, true), "2.2.2.2");
     }
 
     #[test]

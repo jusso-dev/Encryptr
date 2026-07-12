@@ -2,11 +2,13 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: encryptr
-      POSTGRES_PASSWORD: encryptr
-      POSTGRES_DB: encryptr
+      POSTGRES_USER: ${POSTGRES_USER:-encryptr}
+      # Override in production via .env; the default is for local dev only.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-encryptr}
+      POSTGRES_DB: ${POSTGRES_DB:-encryptr}
     ports:
-      - "5432:5432"
+      # Bind to loopback so the database is not exposed on all interfaces.
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -23,7 +25,7 @@ services:
     environment:
       ENVIRONMENT: ${ENVIRONMENT:-development}
       BIND_ADDR: 0.0.0.0:8080
-      DATABASE_URL: postgres://encryptr:encryptr@postgres:5432/encryptr
+      DATABASE_URL: postgres://${POSTGRES_USER:-encryptr}:${POSTGRES_PASSWORD:-encryptr}@postgres:5432/${POSTGRES_DB:-encryptr}
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
       PROVIDER: ${PROVIDER:-ollama}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}

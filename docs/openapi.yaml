@@ -1,362 +1,821 @@
 openapi: 3.1.0
 info:
   title: Encryptr Server API
+  description: Encrypted AI conversation backend. Message content is always client-side AEAD ciphertext; the server stores ciphertext, nonce, and auth tag but can never decrypt it. The `/chat/stream` WebSocket provides end-to-end encrypted streaming inference.
+  license:
+    name: MIT
   version: 0.1.0
-  description: |
-    Encrypted AI conversation backend. Message content is always client-side
-    AEAD ciphertext; the server stores ciphertext, nonce, and auth tag but can
-    never decrypt it. The WebSocket endpoint `/chat/stream` (documented at the
-    bottom, as OpenAPI does not model WebSockets) provides end-to-end
-    encrypted streaming inference.
 servers:
-  - url: http://localhost:8080
-
-components:
-  securitySchemes:
-    bearerAuth:
-      type: http
-      scheme: bearer
-      bearerFormat: JWT
-  schemas:
-    Error:
-      type: object
-      properties:
-        error:
-          type: object
-          properties:
-            code:
-              type: string
-              enum: [validation_error, unauthorized, forbidden, not_found,
-                     conflict, rate_limited, provider_error, internal_error]
-            message:
-              type: string
-    TokenResponse:
-      type: object
-      properties:
-        access_token: { type: string }
-        refresh_token: { type: string }
-        token_type: { type: string, const: Bearer }
-        expires_in: { type: integer, description: Access token TTL in seconds }
-    Conversation:
-      type: object
-      properties:
-        id: { type: string, format: uuid }
-        title: { type: string }
-        model: { type: [string, "null"] }
-        created_at: { type: string, format: date-time }
-        updated_at: { type: string, format: date-time }
-    Message:
-      type: object
-      properties:
-        id: { type: string, format: uuid }
-        conversation_id: { type: string, format: uuid }
-        role: { type: string, enum: [user, assistant] }
-        ciphertext:
-          type: string
-          description: Base64 AEAD ciphertext with 16-byte tag appended. Opaque to the server.
-        nonce: { type: string, description: Base64 96-bit nonce }
-        algorithm: { type: string, default: AES-256-GCM }
-        key_id: { type: [string, "null"], format: uuid }
-        created_at: { type: string, format: date-time }
-    PublicKey:
-      type: object
-      properties:
-        id: { type: string, format: uuid }
-        ed25519_public_key: { type: string, description: Base64, 32 bytes }
-        x25519_public_key: { type: string, description: Base64, 32 bytes }
-        label: { type: string }
-        created_at: { type: string, format: date-time }
-
-  responses:
-    Unauthorized:
-      description: Missing/invalid token or revoked session
-      content:
-        application/json:
-          schema: { $ref: '#/components/schemas/Error' }
-    RateLimited:
-      description: Too many requests
-      content:
-        application/json:
-          schema: { $ref: '#/components/schemas/Error' }
-
+- url: http://localhost:8080
+  description: Local development
 paths:
-  /register:
-    post:
-      summary: Create an account
-      requestBody:
+  /chat/stream:
+    get:
+      tags:
+      - chat
+      summary: Establish the end-to-end encrypted streaming chat WebSocket.
+      description: |-
+        This is a WebSocket upgrade, not a normal request/response. After upgrade the
+        client and server perform an X25519 handshake, then exchange AES-256-GCM
+        encrypted JSON frames (`prompt` → `chunk*` → `done`). See the module docs for
+        the frame protocol. OpenAPI cannot model the frame exchange itself.
+      operationId: chat_stream
+      parameters:
+      - name: token
+        in: query
+        description: |-
+          Access JWT — passed as a query parameter because browsers cannot set
+          the `Authorization` header on a WebSocket upgrade.
         required: true
+        schema:
+          type: string
+      responses:
+        '101':
+          description: Switching Protocols — WebSocket upgrade
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+  /conversations:
+    get:
+      tags:
+      - conversations
+      summary: List the caller's conversations.
+      operationId: list
+      responses:
+        '200':
+          description: Conversations
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ConversationResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+      security:
+      - bearerAuth: []
+    post:
+      tags:
+      - conversations
+      summary: Create a conversation.
+      operationId: create
+      requestBody:
         content:
           application/json:
             schema:
-              type: object
-              required: [email, password]
-              properties:
-                email: { type: string, format: email }
-                password: { type: string, minLength: 10, maxLength: 128 }
-                display_name: { type: string }
+              $ref: '#/components/schemas/CreateConversationRequest'
+        required: true
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+      security:
+      - bearerAuth: []
+  /conversations/{id}:
+    put:
+      tags:
+      - conversations
+      summary: Update a conversation's title or model.
+      operationId: update
+      parameters:
+      - name: id
+        in: path
+        description: Conversation id
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateConversationRequest'
+        required: true
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+      security:
+      - bearerAuth: []
+    delete:
+      tags:
+      - conversations
+      summary: Soft-delete a conversation.
+      operationId: delete
+      parameters:
+      - name: id
+        in: path
+        description: Conversation id
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '204':
+          description: Deleted
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+      security:
+      - bearerAuth: []
+  /health:
+    get:
+      tags:
+      - system
+      summary: Liveness/readiness probe including a database round-trip.
+      operationId: health
+      responses:
+        '200':
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          description: Database unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /keys:
+    get:
+      tags:
+      - keys
+      summary: List the caller's public keys.
+      operationId: list
+      responses:
+        '200':
+          description: Public keys
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/KeyResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+      security:
+      - bearerAuth: []
+    post:
+      tags:
+      - keys
+      summary: Upload a device public-key pair (Ed25519 + X25519).
+      operationId: create
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateKeyRequest'
+        required: true
+      responses:
+        '201':
+          description: Stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KeyResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '409':
+          description: Duplicate label
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+      security:
+      - bearerAuth: []
+  /login:
+    post:
+      tags:
+      - auth
+      summary: Exchange credentials for an access/refresh token pair.
+      operationId: login
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+        required: true
+      responses:
+        '200':
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '429':
+          description: Rate limited
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+  /logout:
+    post:
+      tags:
+      - auth
+      summary: Revoke the current session and all its refresh tokens.
+      operationId: logout
+      responses:
+        '204':
+          description: Session revoked
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+      security:
+      - bearerAuth: []
+  /me:
+    get:
+      tags:
+      - auth
+      summary: Return the authenticated user's profile.
+      operationId: me
+      responses:
+        '200':
+          description: Current user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+      security:
+      - bearerAuth: []
+  /messages:
+    get:
+      tags:
+      - messages
+      summary: List messages in a conversation (newest first, paginated).
+      operationId: list
+      parameters:
+      - name: conversation_id
+        in: query
+        description: Conversation whose messages to return.
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: limit
+        in: query
+        description: Page size, clamped server-side to 1..=200 (default 50).
+        required: false
+        schema:
+          type: integer
+          format: int64
+      - name: before
+        in: query
+        description: Return messages created strictly before this timestamp (pagination).
+        required: false
+        schema:
+          type: string
+          format: date-time
+      responses:
+        '200':
+          description: Messages
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MessageResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '404':
+          description: Conversation not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+      security:
+      - bearerAuth: []
+    post:
+      tags:
+      - messages
+      summary: Store a client-encrypted message. The server never sees plaintext.
+      operationId: create
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateMessageRequest'
+        required: true
+      responses:
+        '201':
+          description: Stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '404':
+          description: Conversation not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+      security:
+      - bearerAuth: []
+  /messages/{id}:
+    delete:
+      tags:
+      - messages
+      summary: Delete one of the caller's messages.
+      operationId: delete
+      parameters:
+      - name: id
+        in: path
+        description: Message id
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '204':
+          description: Deleted
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+      security:
+      - bearerAuth: []
+  /metrics:
+    get:
+      tags:
+      - system
+      summary: |-
+        Operational metrics. Requires authentication: the counters expose internal
+        volumes (sessions, provider/error totals) that should not be public. Scrape
+        with a service account's bearer token, or expose via an internal-only proxy.
+      operationId: metrics
+      responses:
+        '200':
+          description: Prometheus text exposition
+          content:
+            text/plain: {}
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+      security:
+      - bearerAuth: []
+  /refresh:
+    post:
+      tags:
+      - auth
+      summary: |-
+        Rotate a refresh token for a fresh access/refresh pair. Reuse of an
+        already-rotated token revokes the whole session.
+      operationId: refresh
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+        required: true
+      responses:
+        '200':
+          description: Rotated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '401':
+          description: Invalid, expired, or reused token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '429':
+          description: Rate limited
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+  /register:
+    post:
+      tags:
+      - auth
+      summary: Register a new account.
+      operationId: register
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+        required: true
       responses:
         '201':
           description: Account created
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  id: { type: string, format: uuid }
-                  email: { type: string }
-        '400': { description: Validation error }
-        '409': { description: Email already registered }
-        '429': { $ref: '#/components/responses/RateLimited' }
-
-  /login:
-    post:
-      summary: Authenticate and start a session
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [email, password]
-              properties:
-                email: { type: string }
-                password: { type: string }
-      responses:
-        '200':
-          description: Access + refresh tokens
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/TokenResponse' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '429': { $ref: '#/components/responses/RateLimited' }
-
-  /refresh:
-    post:
-      summary: Rotate a refresh token
-      description: |
-        Single-use exchange. Reusing an already-rotated token revokes the
-        entire session (theft detection) and returns 401.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [refresh_token]
-              properties:
-                refresh_token: { type: string }
-      responses:
-        '200':
-          description: New token pair
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/TokenResponse' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-
-  /logout:
-    post:
-      summary: Revoke the current session and all its tokens
-      security: [{ bearerAuth: [] }]
-      responses:
-        '204': { description: Session revoked }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-
-  /me:
-    get:
-      summary: Current user profile
-      security: [{ bearerAuth: [] }]
-      responses:
-        '200':
-          description: Profile
+                $ref: '#/components/schemas/RegisterResponse'
+        '400':
+          description: Validation error
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  id: { type: string, format: uuid }
-                  email: { type: string }
-                  display_name: { type: [string, "null"] }
-                  created_at: { type: string, format: date-time }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-
-  /conversations:
-    get:
-      summary: List conversations (metadata only)
-      security: [{ bearerAuth: [] }]
-      responses:
-        '200':
-          description: Conversations, most recently updated first
+                $ref: '#/components/schemas/ApiError'
+        '409':
+          description: Email already registered
           content:
             application/json:
               schema:
-                type: array
-                items: { $ref: '#/components/schemas/Conversation' }
-    post:
-      summary: Create a conversation
-      security: [{ bearerAuth: [] }]
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                title: { type: string, maxLength: 200 }
-                model: { type: string }
-      responses:
-        '201':
-          description: Created
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Conversation' }
-
-  /conversations/{id}:
-    put:
-      summary: Update title/model
-      security: [{ bearerAuth: [] }]
-      parameters:
-        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                title: { type: string }
-                model: { type: string }
-      responses:
-        '200':
-          description: Updated
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Conversation' }
-        '404': { description: Not found or not owned }
-    delete:
-      summary: Soft-delete a conversation
-      security: [{ bearerAuth: [] }]
-      parameters:
-        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
-      responses:
-        '204': { description: Deleted }
-        '404': { description: Not found or not owned }
-
-  /messages:
-    get:
-      summary: List encrypted messages in a conversation
-      security: [{ bearerAuth: [] }]
-      parameters:
-        - { name: conversation_id, in: query, required: true, schema: { type: string, format: uuid } }
-        - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 200 } }
-        - { name: before, in: query, schema: { type: string, format: date-time },
-            description: Return messages created strictly before this instant }
-      responses:
-        '200':
-          description: Messages, newest first
+                $ref: '#/components/schemas/ApiError'
+        '429':
+          description: Rate limited
           content:
             application/json:
               schema:
-                type: array
-                items: { $ref: '#/components/schemas/Message' }
-        '404': { description: Conversation not found or not owned }
-    post:
-      summary: Store a client-encrypted message
-      security: [{ bearerAuth: [] }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [conversation_id, role, ciphertext, nonce]
-              properties:
-                conversation_id: { type: string, format: uuid }
-                role: { type: string, enum: [user, assistant] }
-                ciphertext: { type: string, description: Base64, ≤256 KiB decoded }
-                nonce: { type: string, description: Base64, exactly 12 bytes }
-                algorithm: { type: string, default: AES-256-GCM }
-                key_id: { type: string, format: uuid }
-      responses:
-        '201':
-          description: Stored
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Message' }
-
-  /messages/{id}:
-    delete:
-      summary: Permanently delete a message
-      security: [{ bearerAuth: [] }]
-      parameters:
-        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
-      responses:
-        '204': { description: Deleted }
-        '404': { description: Not found or not owned }
-
-  /keys:
-    get:
-      summary: List the caller's public keys
-      security: [{ bearerAuth: [] }]
-      responses:
-        '200':
-          description: Active keys
-          content:
-            application/json:
-              schema:
-                type: array
-                items: { $ref: '#/components/schemas/PublicKey' }
-    post:
-      summary: Upload device public keys
-      description: Keys are validated (curve membership, small-order rejection).
-      security: [{ bearerAuth: [] }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [ed25519_public_key, x25519_public_key]
-              properties:
-                ed25519_public_key: { type: string }
-                x25519_public_key: { type: string }
-                label: { type: string, default: default }
-      responses:
-        '201':
-          description: Stored
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/PublicKey' }
-        '400': { description: Invalid key material }
-        '409': { description: Label already used }
-
-  /health:
-    get:
-      summary: Liveness/readiness
-      responses:
-        '200': { description: Healthy }
-        '503': { description: Database unavailable }
-
-  /metrics:
-    get:
-      summary: Prometheus metrics
-      responses:
-        '200':
-          description: Text exposition format
-          content:
-            text/plain: {}
-
-# --- WebSocket: /chat/stream (not modeled by OpenAPI) ---
-#
-# GET /chat/stream?token=<access JWT>   (Upgrade: websocket)
-#
-# JSON text frames:
-#   server → client : {"type":"server_hello","public_key":"<b64 X25519>"}
-#   client → server : {"type":"client_hello","public_key":"<b64 X25519>"}
-#     Both sides: HKDF-SHA256(shared_secret, salt=server_pub||client_pub)
-#     → AES-256-GCM keys "c2s" and "s2c"; nonces are per-direction big-endian
-#     counters in the last 8 bytes of the 12-byte nonce.
-#   client → server : {"type":"prompt","ciphertext":"<b64>","nonce":"<b64>"}
-#     plaintext = {"messages":[{"role":"user","content":"..."}],
-#                  "model"?, "max_tokens"?, "temperature"?}
-#   server → client : {"type":"chunk","ciphertext":"<b64>","nonce":"<b64>"}   (repeated)
-#   server → client : {"type":"done"}
-#   server → client : {"type":"error","code":"...","message":"..."}
-#   client → server : {"type":"close"}
+                $ref: '#/components/schemas/ApiError'
+components:
+  schemas:
+    ApiError:
+      type: object
+      description: |-
+        The error envelope returned by every endpoint on failure. Mirrors
+        `crate::error::AppError`'s HTTP body (defined here so it can carry a
+        `ToSchema` derive without leaking into the error type).
+      required:
+      - error
+      properties:
+        error:
+          $ref: '#/components/schemas/ApiErrorDetail'
+    ApiErrorDetail:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          description: |-
+            Stable machine-readable code, e.g. `validation_error`, `unauthorized`,
+            `not_found`, `conflict`, `rate_limited`, `provider_error`,
+            `internal_error`.
+        message:
+          type: string
+          description: Human-readable, safe-to-display message.
+    ConversationResponse:
+      type: object
+      required:
+      - id
+      - title
+      - created_at
+      - updated_at
+      properties:
+        created_at:
+          type: string
+          format: date-time
+        id:
+          type: string
+          format: uuid
+        model:
+          type:
+          - string
+          - 'null'
+        title:
+          type: string
+        updated_at:
+          type: string
+          format: date-time
+    CreateConversationRequest:
+      type: object
+      properties:
+        model:
+          type:
+          - string
+          - 'null'
+        title:
+          type:
+          - string
+          - 'null'
+    CreateKeyRequest:
+      type: object
+      required:
+      - ed25519_public_key
+      - x25519_public_key
+      properties:
+        ed25519_public_key:
+          type: string
+          description: Base64-encoded 32-byte Ed25519 public key.
+        label:
+          type:
+          - string
+          - 'null'
+        x25519_public_key:
+          type: string
+          description: Base64-encoded 32-byte X25519 public key.
+    CreateMessageRequest:
+      type: object
+      required:
+      - conversation_id
+      - role
+      - ciphertext
+      - nonce
+      properties:
+        algorithm:
+          type:
+          - string
+          - 'null'
+        ciphertext:
+          type: string
+          description: Base64-encoded AEAD ciphertext (tag appended), produced client-side.
+        conversation_id:
+          type: string
+          format: uuid
+        key_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        nonce:
+          type: string
+          description: Base64-encoded 96-bit nonce.
+        role:
+          type: string
+    HealthResponse:
+      type: object
+      required:
+      - status
+      - version
+      - database
+      properties:
+        database:
+          type: string
+        status:
+          type: string
+        version:
+          type: string
+    KeyResponse:
+      type: object
+      required:
+      - id
+      - ed25519_public_key
+      - x25519_public_key
+      - label
+      - created_at
+      properties:
+        created_at:
+          type: string
+          format: date-time
+        ed25519_public_key:
+          type: string
+        id:
+          type: string
+          format: uuid
+        label:
+          type: string
+        x25519_public_key:
+          type: string
+    LoginRequest:
+      type: object
+      required:
+      - email
+      - password
+      properties:
+        email:
+          type: string
+        password:
+          type: string
+    MeResponse:
+      type: object
+      required:
+      - id
+      - email
+      - created_at
+      properties:
+        created_at:
+          type: string
+          format: date-time
+        display_name:
+          type:
+          - string
+          - 'null'
+        email:
+          type: string
+        id:
+          type: string
+          format: uuid
+    MessageResponse:
+      type: object
+      required:
+      - id
+      - conversation_id
+      - role
+      - ciphertext
+      - nonce
+      - algorithm
+      - created_at
+      properties:
+        algorithm:
+          type: string
+        ciphertext:
+          type: string
+        conversation_id:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        id:
+          type: string
+          format: uuid
+        key_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        nonce:
+          type: string
+        role:
+          type: string
+    RefreshRequest:
+      type: object
+      required:
+      - refresh_token
+      properties:
+        refresh_token:
+          type: string
+    RegisterRequest:
+      type: object
+      required:
+      - email
+      - password
+      properties:
+        display_name:
+          type:
+          - string
+          - 'null'
+        email:
+          type: string
+        password:
+          type: string
+    RegisterResponse:
+      type: object
+      required:
+      - id
+      - email
+      properties:
+        email:
+          type: string
+        id:
+          type: string
+          format: uuid
+    TokenResponse:
+      type: object
+      required:
+      - access_token
+      - refresh_token
+      - token_type
+      - expires_in
+      properties:
+        access_token:
+          type: string
+        expires_in:
+          type: integer
+          format: int64
+          minimum: 0
+        refresh_token:
+          type: string
+        token_type:
+          type: string
+    UpdateConversationRequest:
+      type: object
+      properties:
+        model:
+          type:
+          - string
+          - 'null'
+        title:
+          type:
+          - string
+          - 'null'
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT access token from `POST /login`.
+tags:
+- name: auth
+  description: Registration, login, token rotation, sessions
+- name: conversations
+  description: Conversation metadata (server-readable)
+- name: messages
+  description: Client-encrypted message storage
+- name: keys
+  description: Device public keys
+- name: chat
+  description: Encrypted streaming inference (WebSocket)
+- name: system
+  description: Health and metrics
