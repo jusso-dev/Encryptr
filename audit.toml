@@ -1,0 +1,6 @@
+# `sqlx-postgres` 0.8.6 transitively depends on `rsa` 0.9.10.
+# RUSTSEC-2023-0071 has no patched release; track and remove this exception as
+# soon as SQLx can resolve to a fixed `rsa` version. Encryptr does not use RSA
+# keys or operations directly.
+[advisories]
+ignore = ["RUSTSEC-2023-0071"]
